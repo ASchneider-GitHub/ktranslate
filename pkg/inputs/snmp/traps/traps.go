@@ -224,10 +224,21 @@ func (s *SnmpTrap) handle(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
 			continue
 		}
 
+		// Log the OID being looked up
+		s.log.Infof("Looking up OID: %s", v.Name)
+
 		// Do we know this guy?
 		res, vars, err := s.mibdb.GetForKey(v.Name)
 		if err != nil {
 			s.log.Errorf("Cannot look up OID in trap: %v", err)
+		}
+
+		if err != nil {
+			s.log.Errorf("Error looking up OID %s: %v", v.Name, err)
+		} else if res == nil {
+			s.log.Warnf("No result found for OID %s", v.Name)
+		} else {
+			s.log.Infof("OID %s resolved to %s", v.Name, res.GetName())
 		}
 
 		// If we don't want undefined vars, pass along here.
@@ -239,19 +250,23 @@ func (s *SnmpTrap) handle(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
 		// Load any variables defined in the name here.
 		for n, value := range vars {
 			dst.CustomStr[n] = value
+			s.log.Infof("Variable %s set to value %s", n, value)
 		}
 
 		switch v.Type {
 		case gosnmp.OctetString:
+			s.log.Infof("Processing OctetString for OID %s", v.Name)
 			if value, ok := snmp_util.ReadOctetString(v, snmp_util.NO_TRUNCATE); ok {
 				if res != nil && res.Conversion != "" { // Adjust for any hard coded values here.
 					_, sval, mval := snmp_util.GetFromConv(v, res.Conversion, s.log)
 					if len(mval) > 0 { // List the regex matches.
 						for k, v := range mval {
 							dst.CustomStr[k] = v
+							s.log.Infof("Variable %s matched regex and set to %s", k, v)
 						}
 					} else {
 						dst.CustomStr[res.GetName()] = sval
+						s.log.Infof("Variable %s converted and set to %s", res.GetName(), sval)
 					}
 				} else { // No conversion.
 					if !utf8.ValidString(value) { // Print out value as a hex string.
@@ -259,18 +274,24 @@ func (s *SnmpTrap) handle(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
 					}
 					if res != nil {
 						dst.CustomStr[res.GetName()] = value
+						s.log.Infof("Variable %s set to %s", res.GetName(), value)
 					} else {
 						dst.CustomStr[v.Name] = value
+						s.log.Infof("Variable %s set to %s", v.Name, value)
 					}
 				}
 			}
 		case gosnmp.Counter64, gosnmp.Counter32, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Uinteger32, gosnmp.Integer:
+			s.log.Infof("Processing integer type for OID %s", v.Name)
 			if res != nil {
 				dst.CustomBigInt[res.GetName()] = gosnmp.ToBigInt(v.Value).Int64()
+				s.log.Infof("Variable %s set to %d", res.GetName(), dst.CustomBigInt[res.GetName()])
 			} else {
 				dst.CustomBigInt[v.Name] = gosnmp.ToBigInt(v.Value).Int64()
+				s.log.Infof("Variable %s set to %d", v.Name, dst.CustomBigInt[v.Name])
 			}
 		case gosnmp.ObjectIdentifier:
+			s.log.Infof("Processing ObjectIdentifier for OID %s", v.Name)
 			value := v.Value.(string)
 			if res != nil && res.Conversion != "" { // Adjust for any hard coded values here.
 				_, value, _ = snmp_util.GetFromConv(v, res.Conversion, s.log)
@@ -280,8 +301,10 @@ func (s *SnmpTrap) handle(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
 			}
 			if res != nil {
 				dst.CustomStr[res.GetName()] = value
+				s.log.Infof("Variable %s set to %s", res.GetName(), value)
 			} else {
 				dst.CustomStr[v.Name] = value
+				s.log.Infof("Variable %s set to %s", v.Name, value)
 			}
 		default:
 			s.log.Infof("trap variable with unknown type (%v) handling, skipping: %+v", v.Type, v)
@@ -291,11 +314,13 @@ func (s *SnmpTrap) handle(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
 	// If dropping, only send on if found.
 	if s.conf.Trap.DropUndefined || trap.DropUndefinedVars() {
 		if found {
+			s.log.Infof("Trap packet processed and sent: %v", dst)
 			s.jchfChan <- []*kt.JCHF{dst}
 		} else {
 			s.log.Infof("Whole trap packet dropped: %s", trapOid)
 		}
 	} else { // Else, keep to current behavor.
+		s.log.Infof("Trap packet processed and sent: %v", dst)
 		s.jchfChan <- []*kt.JCHF{dst}
 	}
 }
